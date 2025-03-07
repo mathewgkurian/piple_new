@@ -1,45 +1,47 @@
-name: Deploy Azure VM with Docker
+
+name: Deploy to Azure VM
 
 on:
   push:
     branches:
-      - main  # Trigger the workflow on push to the main branch
+      - main  # Runs when code is pushed to 'main'
 
 jobs:
-  terraform:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.4.5  # Specify your Terraform version
+    - name: Set up SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.VM_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H 40.82.207.123 >> ~/.ssh/known_hosts
 
-      - name: Terraform init
-        run: terraform init
+    - name: Deploy files to VM
+      run: |
+        scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r ./* onoadmin@40.82.207.123:~/terraphp/
 
-      - name: Terraform plan
-        run: terraform plan
+    - name: Deploy Docker Container on VM
+      run: |
+        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no onoadmin@13.80.140.157 << 'EOF'
+        # Ensure Docker is installed
+        sudo apt update && sudo apt install -y docker.io
 
-      - name: Terraform apply
-        run: terraform apply -auto-approve
+        # Stop and remove old container if running
+        docker stop terraphp || true
+        docker rm terraphp || true
 
-  ansible:
-    runs-on: ubuntu-latest
-    needs: terraform
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+        # Remove old images to free up space (optional)
+        docker rmi terraphp:latest || true
 
-      - name: Set up Ansible
-        uses: dawidd6/action-ansible-playbook@v2
-        with:
-          ansible_version: 2.9
+        # Navigate to project directory
+        cd ~/terraphp
 
-      - name: Run Docker Playbook
-        env:
-          ANSIBLE_HOST_KEY_CHECKING: "false"  # Disable host key checking
-        run: |
-          ansible-playbook -i inventory.ini docker.yml
+        # Build and run the Docker container
+        docker build -t terraphp:latest .
+        docker run -d -p 80:80 --name terraphp terraphp:latest
+        EOF
